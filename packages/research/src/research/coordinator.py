@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from research.agent import resolve_model
 from research.analysis import run_analysis
 from research.prompts import COORDINATOR_PROMPT
+from research.report import run_report
 from research.schema import ResearchPlan
 from research.search import AgentRunError, BudgetExceeded, SearchAgentOptions, run_search
 from research.synthesis import run_synthesis
@@ -67,8 +68,12 @@ def _plan(state: CoordinatorState, options: SearchAgentOptions) -> CoordinatorSt
             if isinstance(chat, str):
                 raise AgentRunError("coordinator", "coordinator requires a chat model instance")
             planned = chat.with_structured_output(ResearchPlan).invoke(prompt)
-            subtasks = ResearchPlan.model_validate(planned).subtasks
-            return {"subtasks": [item.strip() for item in subtasks if item.strip()], "error": None}
+            raw = ResearchPlan.model_validate(planned).subtasks
+            subtasks = [item.strip() for item in raw if item.strip()]
+            _print("coordinator", "split the request into search subtasks")
+            for topic in subtasks:
+                _print("coordinator", f"planned search: {topic}")
+            return {"subtasks": subtasks, "error": None}
         except BudgetExceeded:
             raise
         except (ValidationError, AgentRunError, Exception) as exc:
@@ -86,6 +91,7 @@ def _delegate(state: CoordinatorState, options: SearchAgentOptions) -> Coordinat
             "analysis": None,
             "error": None,
         }
+        _print("search-agent", topic)
         try:
             sources = run_search(topic, options)
             report["sources"] = sources
@@ -97,6 +103,7 @@ def _delegate(state: CoordinatorState, options: SearchAgentOptions) -> Coordinat
             report["error"] = f"search: {exc}"
             reports.append(report)
             continue
+        _print("analysis-agent", f"analyze sources for {topic}")
         try:
             report["analysis"] = run_analysis(sources)
             report["agent"] = "analysis-agent"
@@ -125,26 +132,24 @@ def _assemble(state: CoordinatorState) -> CoordinatorState:
         analyses.append({"topic": report["topic"], **report["analysis"]})
     if not analyses:
         return {"handoffs": handoffs, "error": state.get("error") or "no analysis completed"}
+    _print("synthesis-agent", "synthesize every completed analysis")
     try:
         synthesis = run_synthesis(analyses)
     except AgentRunError as exc:
         return {"handoffs": handoffs, "error": str(exc)}
     handoffs.append({"agent": "synthesis-agent", "task": "synthesize every completed analysis"})
-    handoffs.append({"agent": "coordinator", "task": "present the synthesis"})
-    return {"answer": _present(synthesis), "handoffs": handoffs, "error": None}
-
-
-def _present(synthesis: dict) -> str:
-    conclusions = []
-    for item in synthesis.get("conclusions") or []:
-        conclusions.append(f"- {item['text']} ({item['confidence']}): {item['why']}")
-    conflicts = []
-    for item in synthesis.get("conflicts") or []:
-        conflicts.append(f"- {item['conflict']} -> {item['resolution']}")
-    gaps = "\n".join(f"- {item}" for item in synthesis.get("gaps") or []) or "- none"
-    return (
-        f"{synthesis.get('picture', '')}\n\n"
-        f"Conclusions from synthesis-agent:\n{chr(10).join(conclusions) or '- none'}\n\n"
-        f"Conflicts:\n{chr(10).join(conflicts) or '- none'}\n\n"
-        f"Gaps:\n{gaps}"
+    _print("report-agent", "write the research report from the full synthesis")
+    try:
+        markdown = run_report(synthesis)
+    except AgentRunError as exc:
+        return {"handoffs": handoffs, "error": str(exc)}
+    handoffs.append(
+        {"agent": "report-agent", "task": "write the research report from the full synthesis"}
     )
+    handoffs.append({"agent": "coordinator", "task": "return the report unchanged"})
+    _print("coordinator", "return the report unchanged")
+    return {"answer": markdown, "handoffs": handoffs, "error": None}
+
+
+def _print(agent: str, task: str) -> None:
+    print(f"delegate {agent}: {task}", flush=True)

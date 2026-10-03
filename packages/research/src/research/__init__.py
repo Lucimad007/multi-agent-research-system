@@ -2,6 +2,7 @@ from research.agent import create_research_agent
 from research.analysis import AnalysisAgentOptions, create_analysis_agent, run_analysis
 from research.coordinator import create_coordinator, run_coordinator
 from research.pipeline import build_research_pipeline, run_research
+from research.report import run_report
 from research.search import (
     AgentRunError,
     AssistantMessage,
@@ -29,6 +30,7 @@ __all__ = [
     "query",
     "run_analysis",
     "run_coordinator",
+    "run_report",
     "run_research",
     "run_search",
     "run_synthesis",

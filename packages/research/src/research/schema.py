@@ -31,11 +31,18 @@ class ClaimSet(BaseModel):
     claims: list[CitedClaim]
 
 
+class AttributedPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1)
+    urls: list[str]
+
+
 class Comparison(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    claims: list[str]
-    disagreements: list[str]
+    claims: list[AttributedPoint]
+    disagreements: list[AttributedPoint]
     gaps: list[str]
     cited_urls: list[str]
 
@@ -52,6 +59,7 @@ class Conclusion(BaseModel):
     text: str = Field(min_length=1)
     confidence: str
     why: str = Field(min_length=1)
+    urls: list[str]
 
 
 class ResolvedConflict(BaseModel):
@@ -59,6 +67,7 @@ class ResolvedConflict(BaseModel):
 
     conflict: str = Field(min_length=1)
     resolution: str = Field(min_length=1)
+    urls: list[str]
 
 
 class SynthesisResult(BaseModel):
@@ -73,9 +82,15 @@ class SynthesisResult(BaseModel):
 class AnalysisResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    claims: list[str]
-    disagreements: list[str]
+    claims: list[AttributedPoint]
+    disagreements: list[AttributedPoint]
     gaps: list[str]
+
+
+class ReportResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    markdown: str = Field(min_length=1)
 
 
 SEARCH_SCHEMA = {

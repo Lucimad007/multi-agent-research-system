@@ -6,6 +6,7 @@ from research.agent import create_research_agent, resolve_model
 from research.analysis import create_analysis_agent, run_analysis
 from research.coordinator import create_coordinator, run_coordinator
 from research.pipeline import build_research_pipeline
+from research.report import _citation_problem
 from research.schema import SearchResult
 from research.search import (
     AgentRunError,
@@ -106,15 +107,16 @@ def test_analysis_graph_grounds_citations(monkeypatch):
         calls["n"] += 1
         if schema.__name__ == "ClaimSet":
             return {"claims": [{"text": "shared", "urls": ["https://a.test"]}]}
+        shared = [{"text": "shared", "urls": ["https://a.test"]}]
         if calls["n"] == 2:
             return {
-                "claims": ["shared"],
+                "claims": shared,
                 "disagreements": [],
                 "gaps": ["cost"],
                 "cited_urls": ["https://evil.test"],
             }
         return {
-            "claims": ["shared"],
+            "claims": shared,
             "disagreements": [],
             "gaps": ["cost"],
             "cited_urls": ["https://a.test"],
@@ -126,7 +128,8 @@ def test_analysis_graph_grounds_citations(monkeypatch):
         {"sources": [{"title": "A", "url": "https://a.test", "summary": "Says shared."}]}
     )
 
-    assert findings == {"claims": ["shared"], "disagreements": [], "gaps": ["cost"]}
+    assert findings["claims"] == [{"text": "shared", "urls": ["https://a.test"]}]
+    assert findings["gaps"] == ["cost"]
     assert calls["n"] == 3
 
 
@@ -181,15 +184,44 @@ def test_coordinator_delegates_one_search_per_subtask(monkeypatch):
 
     monkeypatch.setattr("research.coordinator.run_search", fake_search)
     monkeypatch.setattr("research.coordinator.run_analysis", fake_analysis)
+    report = "\n".join(
+        [
+            "# Checkpointing",
+            "",
+            "## Executive Summary",
+            "Shared [1].",
+            "",
+            "## Findings",
+            "Shared [1].",
+            "",
+            "## Conflicting Evidence",
+            "None.",
+            "",
+            "## Confidence and Limitations",
+            "High.",
+            "",
+            "## References",
+            "1. Checkpointing, https://checkpointing.test",
+            "",
+        ]
+    )
     monkeypatch.setattr(
         "research.coordinator.run_synthesis",
         lambda analyses: {
             "picture": "checkpointing claim across topics",
-            "conclusions": [{"text": "shared", "confidence": "high", "why": "two analyses"}],
+            "conclusions": [
+                {
+                    "text": "shared",
+                    "confidence": "high",
+                    "why": "two analyses",
+                    "urls": ["https://checkpointing.test"],
+                }
+            ],
             "conflicts": [],
             "gaps": ["cost"],
         },
     )
+    monkeypatch.setattr("research.coordinator.run_report", lambda synthesis: report)
 
     result = run_coordinator("How does LangGraph persist state?")
 
@@ -198,7 +230,8 @@ def test_coordinator_delegates_one_search_per_subtask(monkeypatch):
     assert agents.count("search-agent") == 2
     assert agents.count("analysis-agent") == 2
     assert agents.count("synthesis-agent") == 1
-    assert "checkpointing claim" in result["answer"]
+    assert agents.count("report-agent") == 1
+    assert result["answer"] == report
     assert result["error"] is None
 
 
@@ -218,6 +251,29 @@ def test_synthesis_rejects_dropped_gaps(monkeypatch):
         assert exc.stage == "synthesis"
     else:
         raise AssertionError("expected AgentRunError")
+
+
+def test_report_rejects_unknown_reference_url():
+    markdown = """# Title
+
+## Executive Summary
+Answer [1].
+
+## Findings
+Answer [1].
+
+## Conflicting Evidence
+None.
+
+## Confidence and Limitations
+High.
+
+## References
+1. Other, https://evil.test
+"""
+    problem = _citation_problem(markdown, {"https://ok.test"})
+    assert problem is not None
+    assert "https://evil.test" in problem
 
 
 def test_coordinator_graph_plans_then_delegates():
