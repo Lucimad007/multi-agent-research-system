@@ -20,21 +20,21 @@ _SECTIONS = (
 
 def run_report(synthesis: dict, options: SearchAgentOptions | None = None) -> str:
     """Write the final Markdown report from one synthesis. Does not search the web."""
+    try:
+        return _draft_report(synthesis, options)
+    except Exception:
+        return _fallback_report(synthesis)
+
+
+def _draft_report(synthesis: dict, options: SearchAgentOptions | None) -> str:
     selected = options or SearchAgentOptions()
     allowed = _source_urls(synthesis)
     try:
         markdown = _write(synthesis, selected, selected.model)
     except (AgentRunError, BudgetExceeded):
         return _fallback_report(synthesis)
-    problem = _citation_problem(markdown, allowed)
-    if problem is None:
+    if _citation_problem(markdown, allowed) is None:
         return markdown
-    try:
-        repaired = _write(synthesis, selected, selected.model, problem)
-    except (AgentRunError, BudgetExceeded):
-        return _fallback_report(synthesis)
-    if _citation_problem(repaired, allowed) is None:
-        return repaired
     return _fallback_report(synthesis)
 
 

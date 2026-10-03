@@ -9,7 +9,7 @@ from pydantic import BaseModel, ValidationError
 
 from research.agent import resolve_model
 from research.prompts import ANALYSIS_AGENT_PROMPT
-from research.schema import AnalysisResult, ClaimSet, Comparison, SearchResult
+from research.schema import AnalysisResult, Comparison, SearchResult
 from research.search import AgentRunError, BudgetExceeded, SearchAgentOptions, _BudgetGuard
 
 
@@ -28,6 +28,7 @@ class AnalysisState(TypedDict, total=False):
     error: str | None
     repairs: int
     model_name: str
+    question: str
 
 
 def create_analysis_agent(
@@ -44,14 +45,12 @@ def create_analysis_agent(
 
     graph = StateGraph(AnalysisState)
     graph.add_node("validate", _validate_node)
-    graph.add_node("extract", lambda state: _extract_node(state, selected))
     graph.add_node("compare", lambda state: _compare_node(state, selected))
     graph.add_node("ground", _ground_node)
     graph.add_edge(START, "validate")
-    graph.add_conditional_edges("validate", _after_validate, {"extract": "extract", "end": END})
-    graph.add_conditional_edges("extract", _after_extract, {"compare": "compare", "end": END})
+    graph.add_conditional_edges("validate", _after_validate, {"compare": "compare", "end": END})
     graph.add_conditional_edges("compare", _after_compare, {"ground": "ground", "end": END})
-    graph.add_conditional_edges("ground", _after_ground, {"repair": "compare", "end": END})
+    graph.add_edge("ground", END)
     return graph.compile()
 
 
@@ -68,6 +67,7 @@ def run_analysis(sources: dict, options: AnalysisAgentOptions | None = None) -> 
             "error": None,
             "repairs": 0,
             "model_name": selected.model,
+            "question": sources.get("question") or "",
         },
         config={"recursion_limit": selected.max_turns + 4},
     )
@@ -80,21 +80,11 @@ def run_analysis(sources: dict, options: AnalysisAgentOptions | None = None) -> 
 
 
 def _after_validate(state: AnalysisState) -> str:
-    return "end" if state.get("error") else "extract"
-
-
-def _after_extract(state: AnalysisState) -> str:
     return "end" if state.get("error") else "compare"
 
 
 def _after_compare(state: AnalysisState) -> str:
     return "end" if state.get("error") else "ground"
-
-
-def _after_ground(state: AnalysisState) -> str:
-    if state.get("error") == "ungrounded":
-        return "repair"
-    return "end"
 
 
 def _validate_node(state: AnalysisState) -> AnalysisState:
@@ -114,31 +104,23 @@ def _validate_node(state: AnalysisState) -> AnalysisState:
     return {"sources": sources, "error": None}
 
 
-def _extract_node(state: AnalysisState, options: AnalysisAgentOptions) -> AnalysisState:
-    prompt = (
-        f"{options.system_prompt}\n"
-        "Extract atomic claims. Each claim must cite one or more source URLs from the input.\n"
-        f"{json.dumps({'sources': state['sources']}, indent=2)}"
-    )
-    try:
-        payload = _structured(state["model_name"], options, ClaimSet, prompt)
-    except AgentRunError as exc:
-        return {"error": str(exc).removeprefix("analysis: ")}
-    return {"claims": payload["claims"], "error": None}
-
-
 def _compare_node(state: AnalysisState, options: AnalysisAgentOptions) -> AnalysisState:
-    note = ""
-    if state.get("repairs"):
-        note = "Drop any URL that was not in the source list. Cite only the given URLs.\n"
+    sources = [
+        {
+            "title": source["title"][:120],
+            "url": source["url"],
+            "summary": source["summary"][:480],
+        }
+        for source in state["sources"][:5]
+    ]
+    question = state.get("question") or "the requested topic"
     prompt = (
-        f"{options.system_prompt}\n"
-        f"{note}"
-        "claims: statements supported by more than one source.\n"
-        "disagreements: points where sources conflict.\n"
-        "gaps: questions the sources do not answer.\n"
-        "cited_urls: every URL you relied on.\n"
-        f"{json.dumps({'sources': state['sources'], 'claims': state.get('claims', [])}, indent=2)}"
+        f"Question: {question}\n"
+        "Answer that question from these sources only. "
+        "If a source states a price, rate, date, or other figure, put that figure in a claim. "
+        "Do not stop at naming the websites. "
+        "Every URL must be copied from the list. Do not search.\n"
+        f"{json.dumps(sources)}"
     )
     try:
         payload = _structured(state["model_name"], options, Comparison, prompt)
@@ -153,9 +135,7 @@ def _ground_node(state: AnalysisState) -> AnalysisState:
     cited = comparison.get("cited_urls") or []
     unknown = sorted({url for url in cited if url not in allowed})
     if unknown:
-        if state.get("repairs", 0) < 1:
-            return {"error": "ungrounded", "repairs": state.get("repairs", 0) + 1}
-        return {"error": f"findings cited unknown urls: {', '.join(unknown)}", "findings": None}
+        comparison = _drop_unknown_urls(comparison, allowed)
     try:
         findings = AnalysisResult.model_validate(
             {
@@ -167,6 +147,26 @@ def _ground_node(state: AnalysisState) -> AnalysisState:
     except ValidationError:
         return {"error": "analysis output failed schema validation", "findings": None}
     return {"findings": findings, "error": None}
+
+
+def _drop_unknown_urls(comparison: dict, allowed: set[str]) -> dict:
+    def keep(points: list[dict]) -> list[dict]:
+        kept: list[dict] = []
+        for point in points:
+            urls = [url for url in point.get("urls") or [] if url in allowed]
+            text = point.get("text") or ""
+            if text and urls:
+                kept.append({"text": text, "urls": urls})
+        return kept
+
+    gaps = [gap for gap in comparison.get("gaps") or [] if gap]
+    gaps.append("Citations outside the source list were removed.")
+    return {
+        "claims": keep(comparison.get("claims") or []),
+        "disagreements": keep(comparison.get("disagreements") or []),
+        "gaps": gaps,
+        "cited_urls": sorted(allowed),
+    }
 
 
 def _structured(

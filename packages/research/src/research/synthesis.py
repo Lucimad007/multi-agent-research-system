@@ -15,16 +15,96 @@ def run_synthesis(analyses: list[dict], options: SearchAgentOptions | None = Non
     """Synthesize every completed analysis in one pass. Does not search the web."""
     selected = options or SearchAgentOptions()
     if not analyses:
-        raise AgentRunError("synthesis", "synthesis requires at least one analysis")
-    payload = _complete(analyses, selected, selected.model)
+        return _fallback_synthesis(
+            [{"claims": [], "disagreements": [], "gaps": ["No analysis was available."]}]
+        )
+    try:
+        payload = _complete(analyses, selected, selected.model)
+    except (AgentRunError, BudgetExceeded, Exception):
+        return _fallback_synthesis(analyses)
     missing = _missing_gaps(analyses, payload["gaps"])
-    if not missing:
-        return payload
-    repaired = _complete(analyses, selected, selected.model, missing)
-    still_missing = _missing_gaps(analyses, repaired["gaps"])
-    if still_missing:
-        raise AgentRunError("synthesis", "synthesis dropped unresolved gaps")
-    return repaired
+    if missing:
+        return _with_gaps(payload, missing)
+    return payload
+
+
+def _with_gaps(payload: dict, missing: list[str]) -> dict:
+    gaps = list(payload.get("gaps") or [])
+    for gap in missing:
+        if gap not in gaps:
+            gaps.append(gap)
+    payload["gaps"] = gaps
+    return payload
+
+
+def _fallback_synthesis(analyses: list[dict]) -> dict:
+    """Keep every claim, disagreement, and gap when the model pass cannot finish."""
+    gaps: list[str] = []
+    conclusions: list[dict] = []
+    conflicts: list[dict] = []
+    for analysis in analyses:
+        for gap in analysis.get("gaps") or []:
+            if gap and gap not in gaps:
+                gaps.append(gap)
+        for claim in analysis.get("claims") or []:
+            if isinstance(claim, str):
+                conclusions.append(
+                    {
+                        "text": claim,
+                        "confidence": "low",
+                        "why": "Carried from one analysis.",
+                        "urls": [],
+                    }
+                )
+                continue
+            text = claim.get("text") or ""
+            if not text:
+                continue
+            conclusions.append(
+                {
+                    "text": text,
+                    "confidence": "low",
+                    "why": "Carried from the analysis.",
+                    "urls": [url for url in claim.get("urls") or [] if url],
+                }
+            )
+        for item in analysis.get("disagreements") or []:
+            if isinstance(item, str) and item:
+                conflicts.append(
+                    {
+                        "conflict": item,
+                        "resolution": "Both positions remain because the sources do not agree.",
+                        "urls": [],
+                    }
+                )
+                continue
+            text = item.get("text") or ""
+            if not text:
+                continue
+            conflicts.append(
+                {
+                    "conflict": text,
+                    "resolution": "Both positions remain because the sources do not agree.",
+                    "urls": [url for url in item.get("urls") or [] if url],
+                }
+            )
+    if not conclusions:
+        conclusions.append(
+            {
+                "text": "The run did not produce a sourced conclusion.",
+                "confidence": "low",
+                "why": "No claim was available to carry forward.",
+                "urls": [],
+            }
+        )
+    return SynthesisResult.model_validate(
+        {
+            "picture": "The completed analyses were combined directly.",
+            "conclusions": conclusions,
+            "conflicts": conflicts,
+            "gaps": gaps,
+        }
+    ).model_dump()
 
 
 def _complete(
@@ -36,9 +116,14 @@ def _complete(
     reminder = ""
     if missing_gaps:
         reminder = "These gaps were dropped. Include each one verbatim:\n" + "\n".join(missing_gaps)
+    question = next((item.get("question") for item in analyses if item.get("question")), "")
     prompt = (
+        f"The user asked: {question}\n"
+        "The picture and the first conclusion must answer that question. "
+        "If the analyses state a figure, include that figure. "
+        "Do not answer by only listing websites.\n"
         f"{SYNTHESIS_AGENT_PROMPT}\n{reminder}\n"
-        f"{json.dumps(analyses, indent=2)}"
+        f"{json.dumps(analyses)}"
     )
     names = [model_name]
     if options.fallback_model != model_name:

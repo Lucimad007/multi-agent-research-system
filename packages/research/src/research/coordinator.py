@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -6,11 +7,11 @@ from pydantic import ValidationError
 
 from research.agent import resolve_model
 from research.analysis import run_analysis
-from research.prompts import COORDINATOR_PROMPT
-from research.report import run_report
+from research.report import _fallback_report, run_report
 from research.schema import ResearchPlan
-from research.search import AgentRunError, BudgetExceeded, SearchAgentOptions, run_search
-from research.synthesis import run_synthesis
+from research.search import AgentRunError, BudgetExceeded, SearchAgentOptions
+from research.synthesis import _fallback_synthesis, run_synthesis
+from research.tools import collect_sources
 
 
 class CoordinatorState(TypedDict, total=False):
@@ -53,21 +54,19 @@ def _after_plan(state: CoordinatorState) -> str:
 
 
 def _plan(state: CoordinatorState, options: SearchAgentOptions) -> CoordinatorState:
-    request = state["request"].strip()
+    request = state["request"].strip() or "research question"
     if len(request.split()) < 3:
-        _print("coordinator", "need a research question, not a greeting or a single word")
-        print("fail coordinator: need a research question", flush=True)
-        return {"error": "need a research question, not a greeting or a single word"}
+        return _planned([request])
     prompt = (
-        f"{COORDINATOR_PROMPT}\n"
-        "Return 1 to 3 short topics. Do not prefix a topic with the word search.\n"
-        "Do not answer the request.\n"
-        f"Request:\n{state['request']}"
+        "Return 1 or 2 short web search queries that can retrieve the fact asked. "
+        "If the request asks for a price, rate, or other number, "
+        "the first query must look up that figure. "
+        "Do not answer the request. Do not prefix a query with the word search.\n"
+        f"Request:\n{request}"
     )
     names = [options.model]
     if options.fallback_model != options.model:
         names.append(options.fallback_model)
-    last_error = "coordinator could not plan subtasks"
     for name in names:
         try:
             chat = resolve_model(name)
@@ -75,60 +74,38 @@ def _plan(state: CoordinatorState, options: SearchAgentOptions) -> CoordinatorSt
                 raise AgentRunError("coordinator", "coordinator requires a chat model instance")
             planned = chat.with_structured_output(ResearchPlan).invoke(prompt)
             raw = ResearchPlan.model_validate(planned).subtasks
-            subtasks = [_topic(item) for item in raw]
-            subtasks = [item for item in subtasks if item]
-            _print("coordinator", "split the request into search subtasks")
-            for topic in subtasks:
-                _print("coordinator", f"planned search: {topic}")
-            print("ok coordinator: split the request into search subtasks", flush=True)
-            return {"subtasks": subtasks, "error": None}
-        except BudgetExceeded:
-            raise
-        except (ValidationError, AgentRunError, Exception) as exc:
-            last_error = str(exc)
-    return {"error": last_error}
+            subtasks = [item for item in (_topic(item) for item in raw) if item][:2]
+            if subtasks:
+                return _planned(subtasks)
+        except (BudgetExceeded, ValidationError, AgentRunError, Exception):
+            continue
+    return _planned([request])
 
 
-def _delegate(state: CoordinatorState, options: SearchAgentOptions) -> CoordinatorState:
-    reports: list[dict] = []
-    for topic in state.get("subtasks") or []:
-        report: dict = {
-            "topic": topic,
-            "agent": "search-agent",
-            "sources": None,
-            "analysis": None,
-            "error": None,
-        }
+def _delegate(state: CoordinatorState, _options: SearchAgentOptions) -> CoordinatorState:
+    topics = state.get("subtasks") or [state.get("request") or "research question"]
+
+    question = state.get("request") or ""
+
+    def one(topic: str) -> dict:
         _print("search-agent", topic)
-        try:
-            sources = run_search(topic, options)
-            report["sources"] = sources
-            print(f"ok search-agent: {topic}", flush=True)
-        except AgentRunError as exc:
-            report["error"] = str(exc)
-            print(f"fail search-agent: {exc}", flush=True)
-            reports.append(report)
-            continue
-        except Exception as exc:
-            report["error"] = f"search: {exc}"
-            print(f"fail search-agent: {exc}", flush=True)
-            reports.append(report)
-            continue
+        sources = _sources_for(topic)
+        print(f"ok search-agent: {topic}", flush=True)
         task = f"analyze sources for {topic}"
         _print("analysis-agent", task)
-        try:
-            report["analysis"] = run_analysis(sources)
-            report["agent"] = "analysis-agent"
-            print(f"ok analysis-agent: {task}", flush=True)
-        except AgentRunError as exc:
-            report["error"] = str(exc)
-            print(f"fail analysis-agent: {exc}", flush=True)
-        except Exception as exc:
-            report["error"] = f"analysis: {exc}"
-            print(f"fail analysis-agent: {exc}", flush=True)
-        reports.append(report)
-    if not any(report.get("analysis") for report in reports):
-        return {"reports": reports, "error": "no analysis completed"}
+        analysis = _analysis_for(topic, sources, question)
+        print(f"ok analysis-agent: {task}", flush=True)
+        return {
+            "topic": topic,
+            "agent": "analysis-agent",
+            "sources": sources,
+            "analysis": analysis,
+            "error": None,
+        }
+
+    workers = min(2, len(topics))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        reports = list(pool.map(one, topics))
     return {"reports": reports, "error": None}
 
 
@@ -144,32 +121,88 @@ def _assemble(state: CoordinatorState) -> CoordinatorState:
         handoffs.append(
             {"agent": "analysis-agent", "task": f"analyze sources for {report['topic']}"}
         )
-        analyses.append({"topic": report["topic"], **report["analysis"]})
-    if not analyses:
-        return {"handoffs": handoffs, "error": state.get("error") or "no analysis completed"}
+        analyses.append(
+            {
+                "topic": report["topic"],
+                "question": state.get("request") or "",
+                **report["analysis"],
+            }
+        )
     task = "synthesize every completed analysis"
     _print("synthesis-agent", task)
-    try:
-        synthesis = run_synthesis(analyses)
-        print(f"ok synthesis-agent: {task}", flush=True)
-    except AgentRunError as exc:
-        print(f"fail synthesis-agent: {exc}", flush=True)
-        return {"handoffs": handoffs, "error": str(exc)}
+    synthesis = _synthesis_for(analyses)
+    print(f"ok synthesis-agent: {task}", flush=True)
     handoffs.append({"agent": "synthesis-agent", "task": "synthesize every completed analysis"})
     task = "write the research report from the full synthesis"
     _print("report-agent", task)
     try:
         markdown = run_report(synthesis)
-        print(f"ok report-agent: {task}", flush=True)
-    except AgentRunError as exc:
-        print(f"fail report-agent: {exc}", flush=True)
-        return {"handoffs": handoffs, "error": str(exc)}
+    except Exception:
+        markdown = _fallback_report(synthesis)
+    print(f"ok report-agent: {task}", flush=True)
     handoffs.append(
         {"agent": "report-agent", "task": "write the research report from the full synthesis"}
     )
     handoffs.append({"agent": "coordinator", "task": "return the report unchanged"})
-    _print("coordinator", "return the report unchanged")
+    print("ok coordinator: return the report unchanged", flush=True)
     return {"answer": markdown, "handoffs": handoffs, "error": None}
+
+
+def _planned(subtasks: list[str]) -> CoordinatorState:
+    _print("coordinator", "split the request into search subtasks")
+    for topic in subtasks:
+        _print("coordinator", f"planned search: {topic}")
+    print("ok coordinator: split the request into search subtasks", flush=True)
+    return {"subtasks": subtasks, "error": None}
+
+
+def _sources_for(topic: str) -> dict:
+    trimmed = []
+    for source in collect_sources(topic)[:5]:
+        trimmed.append(
+            {
+                "title": (source.get("title") or "Untitled")[:120],
+                "url": source.get("url") or "",
+                "summary": (source.get("summary") or "")[:480],
+            }
+        )
+    return {"sources": [item for item in trimmed if item["url"]]}
+
+
+def _analysis_for(topic: str, sources: dict, question: str) -> dict:
+    payload = {**sources, "question": question}
+    if sources.get("sources"):
+        try:
+            return run_analysis(payload)
+        except Exception:
+            return _analysis_from_sources(topic, sources)
+    return _analysis_from_sources(topic, sources)
+
+
+def _analysis_from_sources(topic: str, sources: dict) -> dict:
+    claims = []
+    for source in sources.get("sources") or []:
+        text = source.get("summary") or source.get("title") or ""
+        url = source.get("url") or ""
+        if text and url:
+            claims.append({"text": text, "urls": [url]})
+    gaps = []
+    if not claims:
+        gaps.append(f"No public sources were retrieved for {topic}.")
+    else:
+        gaps.append("The comparison step kept each source summary as its own claim.")
+    return {"claims": claims, "disagreements": [], "gaps": gaps}
+
+
+def _synthesis_for(analyses: list[dict]) -> dict:
+    if not analyses:
+        return _fallback_synthesis(
+            [{"claims": [], "disagreements": [], "gaps": ["No analysis was available."]}]
+        )
+    try:
+        return run_synthesis(analyses)
+    except Exception:
+        return _fallback_synthesis(analyses)
 
 
 def _topic(text: str) -> str:

@@ -16,21 +16,37 @@ export async function POST(req: Request) {
     env: { ...process.env, RESEARCH_QUERY: query, PYTHONIOENCODING: "utf-8" },
   });
 
+  let closed = false;
   const stream = new ReadableStream({
     start(controller) {
       const encoder = new TextEncoder();
+      const finish = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          closed = true;
+        }
+      };
       const send = (chunk: Buffer | string) => {
-        controller.enqueue(encoder.encode(typeof chunk === "string" ? chunk : chunk.toString()));
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(typeof chunk === "string" ? chunk : chunk.toString()));
+        } catch {
+          closed = true;
+        }
       };
       child.stdout.on("data", send);
       child.stderr.on("data", send);
       child.on("error", (error) => {
         send(`\n__RESULT__${JSON.stringify({ error: error.message, answer: null, handoffs: [] })}`);
-        controller.close();
+        finish();
       });
-      child.on("close", () => controller.close());
+      child.on("close", finish);
     },
     cancel() {
+      closed = true;
       child.kill();
     },
   });
