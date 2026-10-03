@@ -16,6 +16,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from research.agent import DEFAULT_MODEL, resolve_model
 from research.prompts import SEARCH_AGENT_PROMPT
+from research.schema import SearchResult
 from research.tools import web_search
 
 # OpenCode Zen list prices, USD per million tokens: (input, output).
@@ -29,6 +30,14 @@ _TOOLS = {"web_search": web_search}
 
 class BudgetExceeded(RuntimeError):
     """Raised when a run's estimated token cost passes the cap."""
+
+
+class AgentRunError(RuntimeError):
+    """A search or analysis run failed and should not continue."""
+
+    def __init__(self, stage: str, message: str) -> None:
+        self.stage = stage
+        super().__init__(f"{stage}: {message}")
 
 
 @dataclass(frozen=True)
@@ -103,21 +112,27 @@ def create_search_agent(
         model=chat,
         tools=_tools_for(selected.allowed_tools),
         system_prompt=selected.system_prompt,
+        response_format=SearchResult,
         name="search",
     )
 
 
-def run_search(topic: str, options: SearchAgentOptions | None = None) -> str:
-    """Run the search agent, falling back once if the primary model call fails."""
+def run_search(topic: str, options: SearchAgentOptions | None = None) -> dict:
+    """Run the search agent and return a validated source object."""
     selected = options or SearchAgentOptions()
     try:
         return _invoke(topic, selected, selected.model)
-    except BudgetExceeded:
+    except (BudgetExceeded, AgentRunError):
         raise
-    except Exception:
+    except Exception as exc:
         if selected.fallback_model == selected.model:
+            raise AgentRunError("search", str(exc)) from exc
+        try:
+            return _invoke(topic, selected, selected.fallback_model)
+        except (BudgetExceeded, AgentRunError):
             raise
-        return _invoke(topic, selected, selected.fallback_model)
+        except Exception as fallback_exc:
+            raise AgentRunError("search", str(fallback_exc)) from fallback_exc
 
 
 async def query(
@@ -180,14 +195,29 @@ async def _stream(
     yield ResultMessage(num_turns=turns, total_cost_usd=guard.spent_usd)
 
 
-def _invoke(topic: str, options: SearchAgentOptions, model_name: str) -> str:
+def _coerce_search_result(result: dict) -> dict:
+    payload = result.get("structured_response")
+    if payload is None:
+        raise AgentRunError("search", "model did not return the source schema")
+    try:
+        parsed = SearchResult.model_validate(payload)
+    except Exception as exc:
+        raise AgentRunError("search", "search output failed the source schema") from exc
+    if not parsed.sources:
+        raise AgentRunError("search", "search output contained no sources")
+    return parsed.model_dump()
+
+
+def _invoke(topic: str, options: SearchAgentOptions, model_name: str) -> dict:
     agent = create_search_agent(options, model=resolve_model(model_name))
     guard = _BudgetGuard(model_name, options.max_budget_usd)
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": topic}]},
-        config={"recursion_limit": _turn_limit(options.max_turns), "callbacks": [guard]},
-    )
-    content = result["messages"][-1].content
-    if isinstance(content, str):
-        return content
-    return str(content)
+    try:
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": topic}]},
+            config={"recursion_limit": _turn_limit(options.max_turns), "callbacks": [guard]},
+        )
+    except (BudgetExceeded, AgentRunError):
+        raise
+    except Exception as exc:
+        raise AgentRunError("search", str(exc)) from exc
+    return _coerce_search_result(result)

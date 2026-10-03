@@ -3,7 +3,12 @@ import asyncio
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from research.agent import create_research_agent, resolve_model
+from research.analysis import create_analysis_agent, run_analysis
+from research.coordinator import create_coordinator, run_coordinator
+from research.pipeline import build_research_pipeline
+from research.schema import SearchResult
 from research.search import (
+    AgentRunError,
     AssistantMessage,
     ResultMessage,
     SearchAgentOptions,
@@ -64,6 +69,7 @@ def test_search_agent_options_match_opencode_defaults(monkeypatch):
     assert options.fallback_model == "deepseek-v4-flash"
     assert options.max_turns == 10
     assert options.max_budget_usd == 0.05
+    assert captured["response_format"] is SearchResult
 
 
 def test_query_streams_text_then_result(monkeypatch):
@@ -90,3 +96,108 @@ def test_query_streams_text_then_result(monkeypatch):
 
 async def _collect(stream):
     return [message async for message in stream]
+
+
+def test_analysis_graph_grounds_citations(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_structured(model_name, options, schema, prompt):
+        calls["n"] += 1
+        if schema.__name__ == "ClaimSet":
+            return {"claims": [{"text": "shared", "urls": ["https://a.test"]}]}
+        if calls["n"] == 2:
+            return {
+                "claims": ["shared"],
+                "disagreements": [],
+                "gaps": ["cost"],
+                "cited_urls": ["https://evil.test"],
+            }
+        return {
+            "claims": ["shared"],
+            "disagreements": [],
+            "gaps": ["cost"],
+            "cited_urls": ["https://a.test"],
+        }
+
+    monkeypatch.setattr("research.analysis._structured", fake_structured)
+
+    findings = run_analysis(
+        {"sources": [{"title": "A", "url": "https://a.test", "summary": "Says shared."}]}
+    )
+
+    assert findings == {"claims": ["shared"], "disagreements": [], "gaps": ["cost"]}
+    assert calls["n"] == 3
+
+
+def test_analysis_graph_has_grounding_steps():
+    names = set(create_analysis_agent().get_graph().nodes)
+    assert {"validate", "extract", "compare", "ground"} <= names
+
+
+def test_analysis_rejects_bad_search_output():
+    try:
+        run_analysis({"sources": [{"title": "only"}]})
+    except AgentRunError as exc:
+        assert exc.stage == "analysis"
+    else:
+        raise AssertionError("expected AgentRunError")
+
+
+def test_pipeline_skips_analysis_when_search_fails(monkeypatch):
+    def fail(topic):
+        raise AgentRunError("search", "no sources")
+
+    called = {"analysis": False}
+
+    monkeypatch.setattr("research.pipeline.run_search", fail)
+    monkeypatch.setattr(
+        "research.pipeline.run_analysis",
+        lambda sources: called.__setitem__("analysis", True),
+    )
+
+    state = build_research_pipeline().invoke({"topic": "topic"})
+
+    assert state["error"] == "search: no sources"
+    assert called["analysis"] is False
+
+
+def test_coordinator_delegates_one_search_per_subtask(monkeypatch):
+    monkeypatch.setattr(
+        "research.coordinator._plan",
+        lambda state, options: {"subtasks": ["checkpointing", "threads"], "error": None},
+    )
+
+    def fake_search(topic, options=None):
+        return {
+            "sources": [{"title": topic, "url": f"https://{topic}.test", "summary": "Says it."}]
+        }
+
+    analyzed: list[str] = []
+
+    def fake_analysis(sources):
+        analyzed.append(sources["sources"][0]["title"])
+        return {"claims": [f"{analyzed[-1]} claim"], "disagreements": [], "gaps": ["cost"]}
+
+    monkeypatch.setattr("research.coordinator.run_search", fake_search)
+    monkeypatch.setattr("research.coordinator.run_analysis", fake_analysis)
+
+    result = run_coordinator("How does LangGraph persist state?")
+
+    assert analyzed == ["checkpointing", "threads"]
+    agents = [item["agent"] for item in result["handoffs"]]
+    assert agents.count("search-agent") == 2
+    assert agents.count("analysis-agent") == 2
+    assert "checkpointing claim" in result["answer"]
+    assert result["error"] is None
+
+
+def test_coordinator_graph_plans_then_delegates():
+    names = set(create_coordinator().get_graph().nodes)
+    assert {"plan", "delegate", "assemble"} <= names
+
+
+def test_search_schema_requires_title_url_summary():
+    parsed = SearchResult.model_validate(
+        {"sources": [{"title": "A", "url": "https://example.com", "summary": "Says A."}]}
+    )
+    assert parsed.model_dump()["sources"][0]["url"] == "https://example.com"
