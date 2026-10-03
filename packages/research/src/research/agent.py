@@ -9,7 +9,8 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from langgraph.graph.state import CompiledStateGraph
 
-from research.prompts import CRITIC_PROMPT, LEAD_PROMPT, RESEARCHER_PROMPT
+from research.prompts import CRITIC_PROMPT, LEAD_PROMPT, SEARCH_AGENT_PROMPT
+from research.tools import web_search
 
 ZEN_BASE_URL = "https://opencode.ai/zen/v1"
 DEFAULT_MODEL = "deepseek-v4.1-flash"
@@ -18,19 +19,19 @@ Tool = BaseTool | dict[str, Any]
 
 
 def research_subagents(tools: Sequence[Tool] | None = None) -> list[dict[str, Any]]:
-    shared_tools = list(tools or [])
+    search_tools = list(tools) if tools is not None else [web_search]
     return [
         {
-            "name": "researcher",
-            "description": "Investigate a question and return sourced findings.",
-            "system_prompt": RESEARCHER_PROMPT,
-            "tools": shared_tools,
+            "name": "search",
+            "description": "Search the web and return titled sources with URLs and summaries.",
+            "system_prompt": SEARCH_AGENT_PROMPT,
+            "tools": search_tools,
         },
         {
             "name": "critic",
-            "description": "Check a draft for gaps, weak claims, and missing sources.",
+            "description": "Check a source list for missing URLs and unsupported summaries.",
             "system_prompt": CRITIC_PROMPT,
-            "tools": shared_tools,
+            "tools": [],
         },
     ]
 
@@ -68,7 +69,7 @@ def create_research_agent(
     `provider:model` string or a LangChain chat model.
     """
     selected = resolve_model(model)
-    selected_tools = list(tools or [])
+    selected_tools = list(tools) if tools is not None else [web_search]
     return create_deep_agent(
         model=selected,
         tools=selected_tools,

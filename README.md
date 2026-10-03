@@ -4,7 +4,7 @@ Python monorepo for a research system built on [Deep Agents](https://docs.langch
 
 ## layout
 
-- `packages/research` — lead agent plus researcher and critic subagents
+- `packages/research` — lead agent, a web search agent, and a critic
 
 ## setup
 
