@@ -1,0 +1,15 @@
+[project]
+name = "research"
+version = "0.1.0"
+description = "Deep Agents research harness"
+requires-python = ">=3.13"
+dependencies = [
+    "deepagents>=0.7.21",
+    "langchain-openai>=1.6.7",
+    "langgraph>=1.2.12",
+    "python-dotenv>=1.2.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
