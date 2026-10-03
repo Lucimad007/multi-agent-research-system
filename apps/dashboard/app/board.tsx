@@ -62,6 +62,7 @@ export function Board() {
   const [runError, setRunError] = useState("");
   const [selected, setSelected] = useState("coordinator");
   const [hydrated, setHydrated] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
     setHydrated(true);
@@ -73,6 +74,15 @@ export function Board() {
   const states = agents.map((agent) => agentState(events.filter((entry) => entry.agent === agent.id), running));
   const detail = agents.find((item) => item.id === selected) ?? agents[0];
   const liveTasks = tasksFor(events.filter((entry) => entry.agent === detail.id));
+
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
 
   useEffect(() => {
     if (!running) return;
@@ -95,6 +105,7 @@ export function Board() {
     setReport("");
     setRunError("");
     setSelected("coordinator");
+    setElapsed(0);
     document.getElementById("method")?.scrollIntoView({ behavior: "smooth", block: "start" });
     try {
       const response = await fetch("/api/research", {
@@ -166,7 +177,7 @@ export function Board() {
                 variant={words >= 3 ? "default" : "outline"}
                 className={`h-12 rounded-full pr-2 pl-5 ${words >= 3 ? "" : "border-dashed"}`}
               >
-                <span>{running ? "Running" : "Research"}</span>
+                <span>{running ? "Working" : "Research"}</span>
                 <span className="grid size-8 place-items-center rounded-full bg-primary-foreground/15 transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover/button:translate-x-0.5">
                   <ArrowRight size={16} weight="light" />
                 </span>
@@ -197,42 +208,53 @@ export function Board() {
         </section>
 
         <section id="method" className="mx-auto max-w-[1400px] scroll-mt-24 px-4 pt-16 pb-8">
-          <h2 className="max-w-xl text-4xl leading-tight font-medium tracking-tight text-balance text-[var(--ink)] md:text-5xl">
-            Progress shows here.
-          </h2>
-          <p className="mt-4 max-w-[48ch] text-lg leading-relaxed text-[var(--muted)]">
-            {asked ? asked : "You do not assign these steps. They start after you submit the question."}
+          <div className="flex items-end justify-between gap-6">
+            <h2 className="max-w-xl text-4xl leading-tight font-medium tracking-tight text-balance text-[var(--ink)] md:text-5xl">
+              {running ? "Working through the steps." : "Five steps, then the report."}
+            </h2>
+            {running ? (
+              <p className="font-mono text-sm text-info tabular-nums" aria-live="polite">
+                {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+              </p>
+            ) : null}
+          </div>
+          <p className="mt-4 max-w-[52ch] text-lg leading-relaxed text-[var(--muted)]">
+            {asked || "Submit a question and this track shows which step is working."}
           </p>
-          <div className="mt-12">
-            <Pipeline agents={agents} states={states} selected={selected} onSelect={setSelected} />
+          <div className="mt-10">
+            <Pipeline
+              agents={agents}
+              states={states}
+              selected={selected}
+              liveRun={running}
+              onSelect={setSelected}
+            />
           </div>
           <div className="mt-8 grid items-start gap-8 lg:grid-cols-12">
-            <Card className="border border-dashed bg-card/80 shadow-none ring-0 lg:col-span-7">
+            <Card className="bg-card/80 shadow-none ring-1 ring-foreground/10 lg:col-span-7">
             <CardContent>
               <h3 className="text-3xl tracking-tight text-[var(--ink)]">{agentLabel(detail.id)}</h3>
-              <p className="mt-3 max-w-[62ch] text-base leading-relaxed text-[var(--muted)]">
-                {detail.role}. {detail.when}.
-              </p>
-              <p className="mt-3 max-w-[62ch] text-base leading-relaxed text-[var(--ink)]">{detail.output}.</p>
-              <p className="mt-3 max-w-[62ch] text-base leading-relaxed text-[var(--ink)]">
-                Does not: {detail.refuses}.
-              </p>
-              {liveTasks.length > 0 ? (
-                <div className="mt-8">
-                  <h4 className="text-lg text-[var(--ink)]">This run</h4>
-                  <ul className="mt-3 space-y-2">
-                    {liveTasks.map((task) => (
-                      <li key={task} className="text-sm leading-6 text-[var(--muted)]">
-                        {task}
-                      </li>
-                    ))}
-                  </ul>
+              {running && liveTasks.length === 0 ? (
+                <div className="mt-6 space-y-3" aria-hidden="true">
+                  <div className="skeleton shimmer h-4 w-4/5" />
+                  <div className="skeleton shimmer h-4 w-3/5" />
+                  <div className="skeleton shimmer h-4 w-2/3" />
                 </div>
-              ) : (
-                <p className="mt-8 text-sm leading-6 text-[var(--muted)]">
-                  Click a step to read it. Work from the question shows up in this panel.
+              ) : null}
+              {liveTasks.length > 0 ? (
+                <ul className="mt-6 space-y-2">
+                  {liveTasks.map((task) => (
+                    <li key={task} className="text-sm leading-6 text-foreground">
+                      {task}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {!running ? (
+                <p className="mt-4 max-w-[62ch] text-base leading-relaxed text-[var(--muted)]">
+                  {detail.role}. {detail.when}. {detail.output}.
                 </p>
-              )}
+              ) : null}
               <details className="mt-6">
                 <summary className="cursor-pointer text-sm text-[var(--ink)]">What this step does</summary>
                 <ul className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -263,19 +285,22 @@ export function Board() {
         </section>
 
         <section id="report" className="mx-auto max-w-[1400px] scroll-mt-28 px-4 py-16">
-          <h2 className="text-4xl font-medium tracking-tight text-[var(--ink)] md:text-5xl">The report opens here.</h2>
+          <h2 className="text-4xl font-medium tracking-tight text-[var(--ink)] md:text-5xl">
+            {running ? "The report is written last." : "The report opens here."}
+          </h2>
           {report ? (
             <ReportView markdown={report} />
+          ) : running ? (
+            <div className="mt-8 max-w-2xl space-y-3" aria-hidden="true">
+              <div className="skeleton shimmer h-8 w-2/5" />
+              <div className="skeleton shimmer h-4 w-full" />
+              <div className="skeleton shimmer h-4 w-11/12" />
+              <div className="skeleton shimmer h-4 w-4/5" />
+            </div>
           ) : (
-            <Card className="mt-6 border border-dashed bg-transparent shadow-none ring-0">
-              <CardContent>
-                <p className="max-w-[48ch] text-lg leading-relaxed text-muted-foreground">
-                  {running
-                    ? "Still working. The summary, findings, conflicts, limits, and sources will replace this note."
-                    : "Nothing here yet. After the last step, the cited report fills this space."}
-                </p>
-              </CardContent>
-            </Card>
+            <p className="mt-4 max-w-[48ch] text-lg leading-relaxed text-muted-foreground">
+              After the last step, the cited report fills this space.
+            </p>
           )}
         </section>
 

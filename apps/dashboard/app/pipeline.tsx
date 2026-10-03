@@ -1,6 +1,5 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
 import { motion, useReducedMotion } from "motion/react";
 import type { Agent } from "./agents";
 
@@ -16,70 +15,74 @@ export function agentLabel(id: string) {
   return labels[id] ?? id;
 }
 
-function tone(state: string) {
-  if (state === "running") return "info" as const;
-  if (state === "done") return "success" as const;
-  if (state === "failed") return "destructive" as const;
-  if (state.endsWith("finished")) return "warning" as const;
-  return "secondary" as const;
+function statusLabel(state: string, liveRun: boolean) {
+  if (!liveRun && (state === "not started" || state === "waiting")) return "";
+  if (state === "running") return "Working";
+  if (state === "done") return "Done";
+  if (state === "failed") return "Stopped";
+  if (state.endsWith("finished")) return state.replace("finished", "done");
+  return "Waiting";
 }
 
-function frame(state: string) {
-  if (state === "running") return "march";
-  if (state === "done") return "border border-solid border-success/50";
-  if (state === "failed") return "border border-dashed border-danger";
-  if (state.endsWith("finished")) return "border border-dashed border-warning";
-  return "border border-dashed border-muted-foreground/40";
+function tone(state: string) {
+  if (state === "running" || state.endsWith("finished")) return "text-info";
+  if (state === "done") return "text-success";
+  if (state === "failed") return "text-danger";
+  return "text-muted-foreground";
 }
 
 export function Pipeline({
   agents,
   states,
   selected,
+  liveRun,
   onSelect,
 }: {
   agents: Agent[];
   states: string[];
   selected: string;
+  liveRun: boolean;
   onSelect: (id: string) => void;
 }) {
   const reduce = useReducedMotion();
+  const done = states.filter((state) => state === "done").length;
+  const busy = states.some((state) => state === "running" || state.endsWith("finished"));
+  const portion = Math.min(1, (done + (busy ? 0.35 : 0)) / Math.max(agents.length, 1));
 
   return (
-    <div className="relative">
-      <div
-        className="pointer-events-none absolute top-8 right-[10%] left-[10%] hidden border-t border-dashed border-muted-foreground/40 md:block"
-        aria-hidden="true"
-      />
-      <ol className="grid grid-cols-1 gap-2 md:grid-cols-5">
+    <div>
+      <div className="h-1 overflow-hidden rounded-full bg-foreground/10" aria-hidden="true">
+        <motion.div
+          className="h-full origin-left bg-info"
+          initial={false}
+          animate={{ scaleX: portion }}
+          transition={reduce ? { duration: 0 } : { duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+          style={{ width: "100%" }}
+        />
+      </div>
+      <ol className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
         {agents.map((agent, index) => {
           const state = states[index] ?? "not started";
           const active = selected === agent.id;
-          const live = state === "running";
+          const label = statusLabel(state, liveRun);
           return (
-            <motion.li
-              key={agent.id}
-              initial={reduce ? false : { opacity: 0, y: 12 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              whileHover={reduce ? undefined : { y: -3 }}
-              viewport={{ once: true, amount: 0.6 }}
-              transition={{ type: "spring", stiffness: 380, damping: 28, delay: index * 0.04 }}
-            >
+            <li key={agent.id}>
               <button
                 type="button"
                 onClick={() => onSelect(agent.id)}
                 aria-pressed={active}
-                className={`relative w-full rounded-2xl bg-card/80 px-4 py-4 text-left transition-colors duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${frame(state)} ${
-                  active ? "shadow-[var(--shadow)]" : ""
-                } ${live ? "shimmer" : ""}`}
+                className={`w-full rounded-xl px-3 py-3 text-left transition-colors duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+                  active ? "bg-card" : "hover:bg-card/60"
+                }`}
               >
-                <Badge variant={tone(state)} className="mb-3">
-                  {live ? <span className="size-1.5 animate-pulse rounded-full bg-info" /> : null}
-                  {state.charAt(0).toUpperCase() + state.slice(1)}
-                </Badge>
-                <span className="block text-lg tracking-tight text-foreground">{agentLabel(agent.id)}</span>
+                <span className="block text-sm tracking-tight text-foreground">{agentLabel(agent.id)}</span>
+                {label ? (
+                  <span className={`mt-1 block font-mono text-[11px] ${tone(state)}`}>{label}</span>
+                ) : (
+                  <span className="mt-1 block h-4" />
+                )}
               </button>
-            </motion.li>
+            </li>
           );
         })}
       </ol>
