@@ -9,6 +9,7 @@ from research.analysis import run_analysis
 from research.prompts import COORDINATOR_PROMPT
 from research.schema import ResearchPlan
 from research.search import AgentRunError, BudgetExceeded, SearchAgentOptions, run_search
+from research.synthesis import run_synthesis
 
 
 class CoordinatorState(TypedDict, total=False):
@@ -113,22 +114,37 @@ def _assemble(state: CoordinatorState) -> CoordinatorState:
     handoffs: list[dict] = [
         {"agent": "coordinator", "task": "split the request into search subtasks"}
     ]
-    sections: list[str] = []
+    analyses: list[dict] = []
     for report in state.get("reports") or []:
-        topic = report["topic"]
-        handoffs.append({"agent": "search-agent", "task": topic})
-        if report.get("error") and not report.get("analysis"):
-            sections.append(f"{topic}\nsearch-agent: {report['error']}")
+        handoffs.append({"agent": "search-agent", "task": report["topic"]})
+        if not report.get("analysis"):
             continue
-        handoffs.append({"agent": "analysis-agent", "task": f"analyze sources for {topic}"})
-        analysis = report.get("analysis") or {}
-        claims = "\n".join(f"- {item}" for item in analysis.get("claims") or []) or "- none"
-        disagreements = "\n".join(f"- {item}" for item in analysis.get("disagreements") or [])
-        disagreements = disagreements or "- none"
-        gaps = "\n".join(f"- {item}" for item in analysis.get("gaps") or []) or "- none"
-        sections.append(
-            f"{topic}\nClaims found by analysis-agent:\n{claims}\n"
-            f"Disagreements:\n{disagreements}\nGaps:\n{gaps}"
+        handoffs.append(
+            {"agent": "analysis-agent", "task": f"analyze sources for {report['topic']}"}
         )
-    handoffs.append({"agent": "coordinator", "task": "combine the analyses into one answer"})
-    return {"answer": "\n\n".join(sections), "handoffs": handoffs}
+        analyses.append({"topic": report["topic"], **report["analysis"]})
+    if not analyses:
+        return {"handoffs": handoffs, "error": state.get("error") or "no analysis completed"}
+    try:
+        synthesis = run_synthesis(analyses)
+    except AgentRunError as exc:
+        return {"handoffs": handoffs, "error": str(exc)}
+    handoffs.append({"agent": "synthesis-agent", "task": "synthesize every completed analysis"})
+    handoffs.append({"agent": "coordinator", "task": "present the synthesis"})
+    return {"answer": _present(synthesis), "handoffs": handoffs, "error": None}
+
+
+def _present(synthesis: dict) -> str:
+    conclusions = []
+    for item in synthesis.get("conclusions") or []:
+        conclusions.append(f"- {item['text']} ({item['confidence']}): {item['why']}")
+    conflicts = []
+    for item in synthesis.get("conflicts") or []:
+        conflicts.append(f"- {item['conflict']} -> {item['resolution']}")
+    gaps = "\n".join(f"- {item}" for item in synthesis.get("gaps") or []) or "- none"
+    return (
+        f"{synthesis.get('picture', '')}\n\n"
+        f"Conclusions from synthesis-agent:\n{chr(10).join(conclusions) or '- none'}\n\n"
+        f"Conflicts:\n{chr(10).join(conflicts) or '- none'}\n\n"
+        f"Gaps:\n{gaps}"
+    )

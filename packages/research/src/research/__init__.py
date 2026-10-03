@@ -12,6 +12,7 @@ from research.search import (
     query,
     run_search,
 )
+from research.synthesis import run_synthesis
 
 __all__ = [
     "AgentRunError",
@@ -30,4 +31,5 @@ __all__ = [
     "run_coordinator",
     "run_research",
     "run_search",
+    "run_synthesis",
 ]

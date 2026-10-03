@@ -6,6 +6,7 @@ class Source(BaseModel):
 
     title: str = Field(min_length=1)
     url: str = Field(min_length=1)
+    published: str | None = None
     summary: str = Field(min_length=1)
 
 
@@ -45,6 +46,30 @@ class ResearchPlan(BaseModel):
     subtasks: list[str] = Field(min_length=1, max_length=3)
 
 
+class Conclusion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1)
+    confidence: str
+    why: str = Field(min_length=1)
+
+
+class ResolvedConflict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conflict: str = Field(min_length=1)
+    resolution: str = Field(min_length=1)
+
+
+class SynthesisResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    picture: str = Field(min_length=1)
+    conclusions: list[Conclusion]
+    conflicts: list[ResolvedConflict]
+    gaps: list[str]
+
+
 class AnalysisResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -63,6 +88,7 @@ SEARCH_SCHEMA = {
                 "properties": {
                     "title": {"type": "string"},
                     "url": {"type": "string"},
+                    "published": {"type": "string"},
                     "summary": {"type": "string"},
                 },
                 "required": ["title", "url", "summary"],

@@ -15,6 +15,7 @@ from research.search import (
     create_search_agent,
     query,
 )
+from research.synthesis import run_synthesis
 
 
 def test_create_research_agent_uses_deep_agents(monkeypatch):
@@ -180,6 +181,15 @@ def test_coordinator_delegates_one_search_per_subtask(monkeypatch):
 
     monkeypatch.setattr("research.coordinator.run_search", fake_search)
     monkeypatch.setattr("research.coordinator.run_analysis", fake_analysis)
+    monkeypatch.setattr(
+        "research.coordinator.run_synthesis",
+        lambda analyses: {
+            "picture": "checkpointing claim across topics",
+            "conclusions": [{"text": "shared", "confidence": "high", "why": "two analyses"}],
+            "conflicts": [],
+            "gaps": ["cost"],
+        },
+    )
 
     result = run_coordinator("How does LangGraph persist state?")
 
@@ -187,8 +197,27 @@ def test_coordinator_delegates_one_search_per_subtask(monkeypatch):
     agents = [item["agent"] for item in result["handoffs"]]
     assert agents.count("search-agent") == 2
     assert agents.count("analysis-agent") == 2
+    assert agents.count("synthesis-agent") == 1
     assert "checkpointing claim" in result["answer"]
     assert result["error"] is None
+
+
+def test_synthesis_rejects_dropped_gaps(monkeypatch):
+    monkeypatch.setattr(
+        "research.synthesis._complete",
+        lambda analyses, options, model_name, missing_gaps=None: {
+            "picture": "picture",
+            "conclusions": [],
+            "conflicts": [],
+            "gaps": [],
+        },
+    )
+    try:
+        run_synthesis([{"topic": "a", "claims": [], "disagreements": [], "gaps": ["cost"]}])
+    except AgentRunError as exc:
+        assert exc.stage == "synthesis"
+    else:
+        raise AssertionError("expected AgentRunError")
 
 
 def test_coordinator_graph_plans_then_delegates():
