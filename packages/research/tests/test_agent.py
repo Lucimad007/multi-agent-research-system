@@ -6,7 +6,7 @@ from research.agent import create_research_agent, resolve_model
 from research.analysis import create_analysis_agent, run_analysis
 from research.coordinator import create_coordinator, run_coordinator
 from research.pipeline import build_research_pipeline
-from research.report import _citation_problem
+from research.report import _citation_problem, run_report
 from research.schema import SearchResult
 from research.search import (
     AgentRunError,
@@ -17,6 +17,7 @@ from research.search import (
     query,
 )
 from research.synthesis import run_synthesis
+from research.tools import web_search
 
 
 def test_create_research_agent_uses_deep_agents(monkeypatch):
@@ -253,6 +254,31 @@ def test_synthesis_rejects_dropped_gaps(monkeypatch):
         raise AssertionError("expected AgentRunError")
 
 
+def test_report_falls_back_when_the_model_draft_cannot_be_cited(monkeypatch):
+    monkeypatch.setattr(
+        "research.report._write",
+        lambda *args, **kwargs: "# Title\n\nno sections",
+    )
+    markdown = run_report(
+        {
+            "picture": "The rial moved.",
+            "conclusions": [
+                {
+                    "text": "The market rate diverged.",
+                    "confidence": "medium",
+                    "why": "two analyses",
+                    "urls": ["https://example.com/rial"],
+                }
+            ],
+            "conflicts": [],
+            "gaps": ["official rate"],
+        }
+    )
+    assert "## Findings" in markdown
+    assert "https://example.com/rial" in markdown
+    assert "[1]" in markdown
+
+
 def test_report_rejects_unknown_reference_url():
     markdown = """# Title
 
@@ -279,6 +305,39 @@ High.
 def test_coordinator_graph_plans_then_delegates():
     names = set(create_coordinator().get_graph().nodes)
     assert {"plan", "delegate", "assemble"} <= names
+
+
+def test_web_search_tries_the_next_backend(monkeypatch):
+    calls: list[str] = []
+
+    class _DDGS:
+        def __init__(self, timeout: int = 5):
+            self.timeout = timeout
+
+        def text(self, query: str, max_results: int = 8, backend: str = "auto"):
+            calls.append(backend)
+            if backend != "wikipedia":
+                raise TimeoutError("operation timed out")
+            return [{"title": "Dollar", "href": "https://example.com", "body": "Forecast."}]
+
+    monkeypatch.setattr("ddgs.DDGS", _DDGS)
+    text = web_search.invoke("dollar forecast")
+    assert calls[:2] == ["auto", "wikipedia"]
+    assert "https://example.com" in text
+
+
+def test_web_search_does_not_raise_when_every_backend_fails(monkeypatch):
+    class _DDGS:
+        def __init__(self, timeout: int = 5):
+            pass
+
+        def text(self, query: str, max_results: int = 8, backend: str = "auto"):
+            raise TimeoutError("operation timed out")
+
+    monkeypatch.setattr("ddgs.DDGS", _DDGS)
+    text = web_search.invoke("dollar forecast")
+    assert text.startswith("No results")
+    assert "timed out" in text
 
 
 def test_search_schema_requires_title_url_summary():

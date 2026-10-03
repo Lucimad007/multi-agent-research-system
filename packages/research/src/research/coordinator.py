@@ -53,9 +53,15 @@ def _after_plan(state: CoordinatorState) -> str:
 
 
 def _plan(state: CoordinatorState, options: SearchAgentOptions) -> CoordinatorState:
+    request = state["request"].strip()
+    if len(request.split()) < 3:
+        _print("coordinator", "need a research question, not a greeting or a single word")
+        print("fail coordinator: need a research question", flush=True)
+        return {"error": "need a research question, not a greeting or a single word"}
     prompt = (
         f"{COORDINATOR_PROMPT}\n"
-        "Return 1 to 3 search topics. One topic per subtask. Do not answer the request.\n"
+        "Return 1 to 3 short topics. Do not prefix a topic with the word search.\n"
+        "Do not answer the request.\n"
         f"Request:\n{state['request']}"
     )
     names = [options.model]
@@ -69,10 +75,12 @@ def _plan(state: CoordinatorState, options: SearchAgentOptions) -> CoordinatorSt
                 raise AgentRunError("coordinator", "coordinator requires a chat model instance")
             planned = chat.with_structured_output(ResearchPlan).invoke(prompt)
             raw = ResearchPlan.model_validate(planned).subtasks
-            subtasks = [item.strip() for item in raw if item.strip()]
+            subtasks = [_topic(item) for item in raw]
+            subtasks = [item for item in subtasks if item]
             _print("coordinator", "split the request into search subtasks")
             for topic in subtasks:
                 _print("coordinator", f"planned search: {topic}")
+            print("ok coordinator: split the request into search subtasks", flush=True)
             return {"subtasks": subtasks, "error": None}
         except BudgetExceeded:
             raise
@@ -95,22 +103,29 @@ def _delegate(state: CoordinatorState, options: SearchAgentOptions) -> Coordinat
         try:
             sources = run_search(topic, options)
             report["sources"] = sources
+            print(f"ok search-agent: {topic}", flush=True)
         except AgentRunError as exc:
             report["error"] = str(exc)
+            print(f"fail search-agent: {exc}", flush=True)
             reports.append(report)
             continue
         except Exception as exc:
             report["error"] = f"search: {exc}"
+            print(f"fail search-agent: {exc}", flush=True)
             reports.append(report)
             continue
-        _print("analysis-agent", f"analyze sources for {topic}")
+        task = f"analyze sources for {topic}"
+        _print("analysis-agent", task)
         try:
             report["analysis"] = run_analysis(sources)
             report["agent"] = "analysis-agent"
+            print(f"ok analysis-agent: {task}", flush=True)
         except AgentRunError as exc:
             report["error"] = str(exc)
+            print(f"fail analysis-agent: {exc}", flush=True)
         except Exception as exc:
             report["error"] = f"analysis: {exc}"
+            print(f"fail analysis-agent: {exc}", flush=True)
         reports.append(report)
     if not any(report.get("analysis") for report in reports):
         return {"reports": reports, "error": "no analysis completed"}
@@ -132,16 +147,22 @@ def _assemble(state: CoordinatorState) -> CoordinatorState:
         analyses.append({"topic": report["topic"], **report["analysis"]})
     if not analyses:
         return {"handoffs": handoffs, "error": state.get("error") or "no analysis completed"}
-    _print("synthesis-agent", "synthesize every completed analysis")
+    task = "synthesize every completed analysis"
+    _print("synthesis-agent", task)
     try:
         synthesis = run_synthesis(analyses)
+        print(f"ok synthesis-agent: {task}", flush=True)
     except AgentRunError as exc:
+        print(f"fail synthesis-agent: {exc}", flush=True)
         return {"handoffs": handoffs, "error": str(exc)}
     handoffs.append({"agent": "synthesis-agent", "task": "synthesize every completed analysis"})
-    _print("report-agent", "write the research report from the full synthesis")
+    task = "write the research report from the full synthesis"
+    _print("report-agent", task)
     try:
         markdown = run_report(synthesis)
+        print(f"ok report-agent: {task}", flush=True)
     except AgentRunError as exc:
+        print(f"fail report-agent: {exc}", flush=True)
         return {"handoffs": handoffs, "error": str(exc)}
     handoffs.append(
         {"agent": "report-agent", "task": "write the research report from the full synthesis"}
@@ -149,6 +170,16 @@ def _assemble(state: CoordinatorState) -> CoordinatorState:
     handoffs.append({"agent": "coordinator", "task": "return the report unchanged"})
     _print("coordinator", "return the report unchanged")
     return {"answer": markdown, "handoffs": handoffs, "error": None}
+
+
+def _topic(text: str) -> str:
+    cleaned = text.strip()
+    lowered = cleaned.lower()
+    if lowered.startswith("search:"):
+        return cleaned.split(":", 1)[1].strip()
+    if lowered.startswith("search "):
+        return cleaned[7:].strip()
+    return cleaned
 
 
 def _print(agent: str, task: str) -> None:
