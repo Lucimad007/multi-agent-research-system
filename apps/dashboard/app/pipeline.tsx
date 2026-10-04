@@ -16,19 +16,18 @@ export function agentLabel(id: string) {
 }
 
 function statusLabel(state: string, liveRun: boolean) {
-  if (!liveRun && (state === "not started" || state === "waiting")) return "";
+  if (!liveRun && (state === "not started" || state === "waiting")) return "Ready";
   if (state === "running") return "Working";
   if (state === "done") return "Done";
   if (state === "failed") return "Stopped";
-  if (state.endsWith("finished")) return state.replace("finished", "done");
   return "Waiting";
 }
 
-function tone(state: string) {
-  if (state === "running" || state.endsWith("finished")) return "text-info";
-  if (state === "done") return "text-success";
-  if (state === "failed") return "text-danger";
-  return "text-muted-foreground";
+function mark(state: string) {
+  if (state === "running") return "bg-info";
+  if (state === "done") return "bg-success";
+  if (state === "failed") return "bg-danger";
+  return "bg-foreground/15";
 }
 
 export function Pipeline({
@@ -46,41 +45,42 @@ export function Pipeline({
 }) {
   const reduce = useReducedMotion();
   const done = states.filter((state) => state === "done").length;
-  const busy = states.some((state) => state === "running" || state.endsWith("finished"));
-  const portion = Math.min(1, (done + (busy ? 0.35 : 0)) / Math.max(agents.length, 1));
+  const working = states.filter((state) => state === "running").length;
+  const portion = Math.min(1, (done + working * 0.45) / Math.max(agents.length, 1));
 
   return (
-    <div>
-      <div className="h-1 overflow-hidden rounded-full bg-foreground/10" aria-hidden="true">
+    <div className="overflow-hidden rounded-t-2xl border border-b-0 border-border bg-card">
+      <div className="h-1 bg-foreground/10" aria-hidden="true">
         <motion.div
-          className="h-full origin-left bg-info"
+          className="h-full bg-progress"
           initial={false}
-          animate={{ scaleX: portion }}
+          animate={{ width: `${portion * 100}%` }}
           transition={reduce ? { duration: 0 } : { duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-          style={{ width: "100%" }}
         />
       </div>
-      <ol className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+      <ol className="grid grid-cols-2 sm:grid-cols-5">
         {agents.map((agent, index) => {
           const state = states[index] ?? "not started";
           const active = selected === agent.id;
-          const label = statusLabel(state, liveRun);
           return (
-            <li key={agent.id}>
+            <li key={agent.id} className="border-border sm:border-r sm:last:border-r-0">
               <button
                 type="button"
                 onClick={() => onSelect(agent.id)}
                 aria-pressed={active}
-                className={`w-full rounded-xl px-3 py-3 text-left transition-colors duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
-                  active ? "bg-card" : "hover:bg-card/60"
+                className={`flex h-full min-h-24 w-full flex-col justify-between px-4 py-4 text-left transition-colors duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.99] ${
+                  active ? "bg-background" : "hover:bg-background/50"
                 }`}
               >
-                <span className="block text-sm tracking-tight text-foreground">{agentLabel(agent.id)}</span>
-                {label ? (
-                  <span className={`mt-1 block font-mono text-[11px] ${tone(state)}`}>{label}</span>
-                ) : (
-                  <span className="mt-1 block h-4" />
-                )}
+                <span className={`block h-1 w-8 rounded-full ${mark(state)}`} />
+                <span>
+                  <span className="mt-4 block text-sm font-medium tracking-tight text-foreground">
+                    {agentLabel(agent.id)}
+                  </span>
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    {statusLabel(state, liveRun)}
+                  </span>
+                </span>
               </button>
             </li>
           );

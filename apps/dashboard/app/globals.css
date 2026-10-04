@@ -20,6 +20,7 @@
   --info-ink: #07131c;
   --success: #8fbfa4;
   --success-ink: #102018;
+  --progress: #d7a15a;
   --warning: #e0cf96;
   --warning-ink: #241c08;
   --danger: #e3b4b8;
@@ -43,6 +44,7 @@
   --info-ink: #f4f8fb;
   --success: #1d6848;
   --success-ink: #f3faf6;
+  --progress: #c4842a;
   --warning: #7a5b16;
   --warning-ink: #fff8e8;
   --danger: #8c3a44;
@@ -57,6 +59,7 @@
   --color-info-foreground: var(--info-ink);
   --color-success: var(--success);
   --color-success-foreground: var(--success-ink);
+  --color-progress: var(--progress);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-ink);
   --color-danger: var(--danger);
@@ -185,6 +188,16 @@ body {
   }
 }
 
+@keyframes grid-drift {
+  to {
+    transform: translateY(var(--cell-size));
+  }
+}
+
+.animate-grid {
+  animation: grid-drift 18s linear infinite;
+}
+
 @media (prefers-reduced-transparency: reduce) {
   .glass-nav {
     background: var(--bg-elev);
@@ -198,7 +211,8 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .shimmer::after,
-  .skeleton::after {
+  .skeleton::after,
+  .animate-grid {
     animation: none;
   }
 }

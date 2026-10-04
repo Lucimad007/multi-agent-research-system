@@ -4,8 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { ArrowRight } from "@phosphor-icons/react";
-import Image from "next/image";
+import { RetroGrid } from "@/components/retro-grid";
+import { ArrowRight, MagnifyingGlass } from "@phosphor-icons/react";
 import { useEffect, useState, type FormEvent } from "react";
 import { agents } from "./agents";
 import { Field } from "./field";
@@ -30,10 +30,8 @@ function readEvents(log: string): Event[] {
 function agentState(events: Event[], running: boolean): string {
   const last = events.at(-1);
   if (!last) return "not started";
-  const finished = events.filter((event) => event.kind === "ok").length;
   if (last.kind === "delegate") return running ? "running" : "failed";
   if (last.kind === "fail") return "failed";
-  if (running && finished > 0) return `${finished} finished`;
   return "done";
 }
 
@@ -149,62 +147,72 @@ export function Board() {
       </a>
       <Header />
       <main className="relative z-10">
-        <section id="desk" className="mx-auto max-w-3xl px-4 pt-24">
-          <h1 className="text-4xl leading-tight font-medium tracking-tight text-balance text-[var(--ink)] md:text-5xl">
-            Put the question here.
-          </h1>
-          <p className="mt-4 max-w-[46ch] text-lg leading-relaxed text-[var(--muted)]">
-            The steps below run by themselves. The report opens underneath.
-          </p>
-          <form onSubmit={onSearch} className="mt-8">
-            <label htmlFor="research-query" className="text-sm text-[var(--ink)]">
-              Your question
-            </label>
-            <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center">
-              <Input
-                id="research-query"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Write the question in this box"
-                autoComplete="off"
-                className="h-12 rounded-2xl border-dashed bg-card px-4 text-base md:text-base"
-              />
-              <Button
-                type="submit"
-                size="lg"
-                disabled={!hydrated || running || words < 3}
-                suppressHydrationWarning
-                variant={words >= 3 ? "default" : "outline"}
-                className={`h-12 rounded-full pr-2 pl-5 ${words >= 3 ? "" : "border-dashed"}`}
-              >
-                <span>{running ? "Working" : "Research"}</span>
-                <span className="grid size-8 place-items-center rounded-full bg-primary-foreground/15 transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover/button:translate-x-0.5">
-                  <ArrowRight size={16} weight="light" />
-                </span>
-              </Button>
-            </div>
-            <p className={`mt-2 text-sm ${words >= 3 ? "text-success" : "text-muted-foreground"}`} aria-live="polite">
-              {words >= 3 ? "This is enough to start." : `Add ${3 - words} more ${3 - words === 1 ? "word" : "words"}.`}
+        <section id="desk" className="relative overflow-hidden px-4 pt-28 pb-16">
+          <RetroGrid />
+          <div className="relative z-10 mx-auto max-w-3xl text-center">
+            <p className="mx-auto w-fit rounded-full border border-border bg-card/80 px-3 py-1 text-xs text-muted-foreground">
+              Research desk
             </p>
-            {runError ? <p className="mt-2 text-sm text-danger">{runError}</p> : null}
-            <Separator className="my-4 h-px bg-transparent data-horizontal:border-t data-horizontal:border-dashed" decorative />
-            <div className="flex flex-col gap-2 sm:flex-row">
-              {examples.map((example) => (
+            <h1 className="mt-6 text-4xl leading-[1.05] font-medium tracking-tight text-balance text-foreground md:text-6xl">
+              A cited report from one question.
+            </h1>
+            <p className="mx-auto mt-4 max-w-[42ch] text-lg leading-relaxed text-muted-foreground">
+              Search, analysis, and synthesis run in order. The report keeps every source.
+            </p>
+            <form
+              onSubmit={onSearch}
+              className="mx-auto mt-8 max-w-xl rounded-2xl border border-border bg-card p-2 text-left shadow-[var(--shadow)]"
+            >
+              <label htmlFor="research-query" className="sr-only">
+                Your question
+              </label>
+              <div className="flex items-center gap-2 rounded-xl bg-background/60 px-3">
+                <MagnifyingGlass className="shrink-0 text-muted-foreground" size={18} weight="light" />
+                <Input
+                  id="research-query"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Ask for a fact, a rate, or a comparison"
+                  autoComplete="off"
+                  className="h-12 border-0 bg-transparent px-0 text-base shadow-none focus-visible:ring-0 md:text-base"
+                />
                 <Button
-                  key={example}
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setQuery(example);
-                    document.getElementById("research-query")?.focus();
-                  }}
-                  className="h-auto justify-start rounded-2xl border-dashed px-4 py-3 text-left whitespace-normal"
+                  type="submit"
+                  size="sm"
+                  disabled={!hydrated || running || words < 3}
+                  suppressHydrationWarning
+                  className="rounded-full"
                 >
-                  {example}
+                  {running ? "Working" : "Research"}
+                  <ArrowRight size={14} weight="light" />
                 </Button>
-              ))}
-            </div>
-          </form>
+              </div>
+              <Separator className="my-1" />
+              <div className="px-1 py-1">
+                {examples.map((example) => (
+                  <button
+                    key={example}
+                    type="button"
+                    onClick={() => {
+                      setQuery(example);
+                      document.getElementById("research-query")?.focus();
+                    }}
+                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <ArrowRight size={14} weight="light" />
+                    <span>{example}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center justify-between px-3 pt-1 pb-2 text-xs text-muted-foreground">
+                <span>Enter to research</span>
+                <span className={words >= 3 ? "text-success" : ""} aria-live="polite">
+                  {words >= 3 ? "Ready" : `${words}/3 words`}
+                </span>
+              </div>
+              {runError ? <p className="px-3 pb-2 text-sm text-danger">{runError}</p> : null}
+            </form>
+          </div>
         </section>
 
         <section id="method" className="mx-auto max-w-[1400px] scroll-mt-24 px-4 pt-16 pb-8">
@@ -230,19 +238,17 @@ export function Board() {
               onSelect={setSelected}
             />
           </div>
-          <div className="mt-8 grid items-start gap-8 lg:grid-cols-12">
-            <Card className="bg-card/80 shadow-none ring-1 ring-foreground/10 lg:col-span-7">
-            <CardContent>
-              <h3 className="text-3xl tracking-tight text-[var(--ink)]">{agentLabel(detail.id)}</h3>
+          <Card className="rounded-t-none border-border bg-card shadow-none">
+            <CardContent className="pt-5">
+              <h3 className="text-xl tracking-tight text-foreground">{agentLabel(detail.id)}</h3>
               {running && liveTasks.length === 0 ? (
-                <div className="mt-6 space-y-3" aria-hidden="true">
+                <div className="mt-4 space-y-3" aria-hidden="true">
                   <div className="skeleton shimmer h-4 w-4/5" />
                   <div className="skeleton shimmer h-4 w-3/5" />
-                  <div className="skeleton shimmer h-4 w-2/3" />
                 </div>
               ) : null}
               {liveTasks.length > 0 ? (
-                <ul className="mt-6 space-y-2">
+                <ul className="mt-4 space-y-2">
                   {liveTasks.map((task) => (
                     <li key={task} className="text-sm leading-6 text-foreground">
                       {task}
@@ -251,37 +257,22 @@ export function Board() {
                 </ul>
               ) : null}
               {!running ? (
-                <p className="mt-4 max-w-[62ch] text-base leading-relaxed text-[var(--muted)]">
-                  {detail.role}. {detail.when}. {detail.output}.
+                <p className="mt-2 max-w-[68ch] text-sm leading-6 text-muted-foreground">
+                  {detail.role}. {detail.output}.
                 </p>
               ) : null}
-              <details className="mt-6">
-                <summary className="cursor-pointer text-sm text-[var(--ink)]">What this step does</summary>
-                <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+              <details className="mt-4">
+                <summary className="cursor-pointer text-sm text-foreground">What this step does</summary>
+                <ul className="mt-3 grid gap-2 sm:grid-cols-2">
                   {detail.steps.map((step) => (
-                    <li key={step} className="text-sm leading-6 text-[var(--muted)]">
+                    <li key={step} className="text-sm leading-6 text-muted-foreground">
                       {step}
                     </li>
                   ))}
                 </ul>
               </details>
             </CardContent>
-            </Card>
-            <div className="lg:col-span-5">
-              <div className="rounded-[1.75rem] bg-[var(--bezel)] p-2 ring-1 ring-[var(--line)]">
-                <div className="relative aspect-[4/3] overflow-hidden rounded-[1.35rem]">
-                  <Image
-                    src="/paper-layers.jpg"
-                    alt="Stacked sheets with a thin green light between the layers"
-                    fill
-                    priority
-                    sizes="(min-width: 1024px) 36vw, 100vw"
-                    className="object-cover"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
+          </Card>
         </section>
 
         <section id="report" className="mx-auto max-w-[1400px] scroll-mt-28 px-4 py-16">
