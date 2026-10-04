@@ -365,7 +365,8 @@ High.
 
 def test_coordinator_graph_plans_then_delegates():
     names = set(create_coordinator().get_graph().nodes)
-    assert {"plan", "delegate", "assemble"} <= names
+    assert "coordinator" in names
+    assert {"search", "analysis", "synthesis", "report"} <= names
 
 
 def test_web_search_tries_the_next_backend(monkeypatch):

@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -17,23 +16,40 @@ from research.tools import collect_sources
 class CoordinatorState(TypedDict, total=False):
     request: str
     subtasks: list[str]
-    reports: list[dict]
+    index: int
+    have_sources: bool
+    sources: dict | None
+    analyses: list[dict]
+    synthesis: dict | None
     answer: str | None
     handoffs: list[dict]
+    reports: list[dict]
     error: str | None
 
 
 def create_coordinator(options: SearchAgentOptions | None = None) -> CompiledStateGraph:
-    """Plan subtasks, delegate search and analysis, then assemble the answer."""
+    """Coordinator node routes every handoff. Specialists only answer the coordinator."""
     selected = options or SearchAgentOptions()
     graph = StateGraph(CoordinatorState)
-    graph.add_node("plan", lambda state: _plan(state, selected))
-    graph.add_node("delegate", lambda state: _delegate(state, selected))
-    graph.add_node("assemble", _assemble)
-    graph.add_edge(START, "plan")
-    graph.add_conditional_edges("plan", _after_plan, {"delegate": "delegate", "end": END})
-    graph.add_edge("delegate", "assemble")
-    graph.add_edge("assemble", END)
+    graph.add_node("coordinator", lambda state: _coordinator(state, selected))
+    graph.add_node("search", _search)
+    graph.add_node("analysis", _analysis)
+    graph.add_node("synthesis", _synthesis)
+    graph.add_node("report", _report)
+    graph.add_edge(START, "coordinator")
+    graph.add_conditional_edges(
+        "coordinator",
+        _route,
+        {
+            "search": "search",
+            "analysis": "analysis",
+            "synthesis": "synthesis",
+            "report": "report",
+            "end": END,
+        },
+    )
+    for specialist in ("search", "analysis", "synthesis", "report"):
+        graph.add_edge(specialist, "coordinator")
     return graph.compile()
 
 
@@ -49,8 +65,31 @@ def run_coordinator(request: str, options: SearchAgentOptions | None = None) -> 
     }
 
 
-def _after_plan(state: CoordinatorState) -> str:
-    return "end" if state.get("error") else "delegate"
+def _route(state: CoordinatorState) -> str:
+    """The coordinator chooses the next specialist. Specialists never choose."""
+    subtasks = state.get("subtasks") or []
+    index = state.get("index", 0)
+    analyses = state.get("analyses") or []
+    if index < len(subtasks) and len(analyses) == index:
+        return "analysis" if state.get("have_sources") else "search"
+    if not state.get("synthesis"):
+        return "synthesis"
+    if not state.get("answer"):
+        return "report"
+    return "end"
+
+
+def _coordinator(state: CoordinatorState, options: SearchAgentOptions) -> CoordinatorState:
+    if state.get("subtasks"):
+        return {}
+    planned = _plan(state, options)
+    return {
+        "subtasks": planned.get("subtasks") or [],
+        "index": 0,
+        "analyses": [],
+        "have_sources": False,
+        "sources": None,
+    }
 
 
 def _plan(state: CoordinatorState, options: SearchAgentOptions) -> CoordinatorState:
@@ -82,70 +121,66 @@ def _plan(state: CoordinatorState, options: SearchAgentOptions) -> CoordinatorSt
     return _planned([request])
 
 
-def _delegate(state: CoordinatorState, _options: SearchAgentOptions) -> CoordinatorState:
-    topics = state.get("subtasks") or [state.get("request") or "research question"]
-
-    question = state.get("request") or ""
-
-    def one(topic: str) -> dict:
-        _print("search-agent", topic)
-        sources = _sources_for(topic)
-        print(f"ok search-agent: {topic}", flush=True)
-        task = f"analyze sources for {topic}"
-        _print("analysis-agent", task)
-        analysis = _analysis_for(topic, sources, question)
-        print(f"ok analysis-agent: {task}", flush=True)
-        return {
-            "topic": topic,
-            "agent": "analysis-agent",
-            "sources": sources,
-            "analysis": analysis,
-            "error": None,
-        }
-
-    workers = min(2, len(topics))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        reports = list(pool.map(one, topics))
-    return {"reports": reports, "error": None}
+def _search(state: CoordinatorState) -> CoordinatorState:
+    topic = state["subtasks"][state.get("index", 0)]
+    _print("search-agent", topic)
+    sources = _sources_for(topic)
+    print(f"ok search-agent: {topic}", flush=True)
+    handoffs = _note(state, "search-agent", topic)
+    return {"sources": sources, "have_sources": True, "handoffs": handoffs}
 
 
-def _assemble(state: CoordinatorState) -> CoordinatorState:
-    handoffs: list[dict] = [
-        {"agent": "coordinator", "task": "split the request into search subtasks"}
-    ]
-    analyses: list[dict] = []
-    for report in state.get("reports") or []:
-        handoffs.append({"agent": "search-agent", "task": report["topic"]})
-        if not report.get("analysis"):
-            continue
-        handoffs.append(
-            {"agent": "analysis-agent", "task": f"analyze sources for {report['topic']}"}
-        )
-        analyses.append(
-            {
-                "topic": report["topic"],
-                "question": state.get("request") or "",
-                **report["analysis"],
-            }
-        )
+def _analysis(state: CoordinatorState) -> CoordinatorState:
+    topic = state["subtasks"][state.get("index", 0)]
+    task = f"analyze sources for {topic}"
+    _print("analysis-agent", task)
+    analysis = _analysis_for(topic, state.get("sources") or {}, state.get("request") or "")
+    print(f"ok analysis-agent: {task}", flush=True)
+    analyses = list(state.get("analyses") or [])
+    analyses.append(
+        {"topic": topic, "question": state.get("request") or "", **analysis}
+    )
+    handoffs = _note(state, "analysis-agent", task)
+    return {
+        "analyses": analyses,
+        "sources": None,
+        "have_sources": False,
+        "index": state.get("index", 0) + 1,
+        "handoffs": handoffs,
+    }
+
+
+def _synthesis(state: CoordinatorState) -> CoordinatorState:
     task = "synthesize every completed analysis"
     _print("synthesis-agent", task)
-    synthesis = _synthesis_for(analyses)
+    synthesis = _synthesis_for(state.get("analyses") or [])
     print(f"ok synthesis-agent: {task}", flush=True)
-    handoffs.append({"agent": "synthesis-agent", "task": "synthesize every completed analysis"})
+    return {"synthesis": synthesis, "handoffs": _note(state, "synthesis-agent", task)}
+
+
+def _report(state: CoordinatorState) -> CoordinatorState:
     task = "write the research report from the full synthesis"
     _print("report-agent", task)
+    synthesis = state.get("synthesis") or {}
     try:
         markdown = run_report(synthesis)
     except Exception:
         markdown = _fallback_report(synthesis)
     print(f"ok report-agent: {task}", flush=True)
-    handoffs.append(
-        {"agent": "report-agent", "task": "write the research report from the full synthesis"}
-    )
-    handoffs.append({"agent": "coordinator", "task": "return the report unchanged"})
     print("ok coordinator: return the report unchanged", flush=True)
-    return {"answer": markdown, "handoffs": handoffs, "error": None}
+    handoffs = _note(state, "report-agent", task)
+    handoffs.append({"agent": "coordinator", "task": "return the report unchanged"})
+    reports = [
+        {"topic": item.get("topic"), "analysis": item}
+        for item in state.get("analyses") or []
+    ]
+    return {"answer": markdown, "handoffs": handoffs, "reports": reports, "error": None}
+
+
+def _note(state: CoordinatorState, agent: str, task: str) -> list[dict]:
+    handoffs = list(state.get("handoffs") or [])
+    handoffs.append({"agent": agent, "task": task})
+    return handoffs
 
 
 def _planned(subtasks: list[str]) -> CoordinatorState:
