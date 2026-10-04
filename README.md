@@ -7,21 +7,21 @@
 
 Ask one question. The coordinator talks to four specialists and returns a cited Markdown report. Specialists never call each other.
 
-![Research desk](docs/images/hero.png)
+![Research desk](docs/images/desk.png)
 
 ## A run
 
 Question: what is the current price of gold per ounce?
 
-![The question in the desk](docs/images/question.png)
+![The question in the desk](docs/images/ask.png)
 
 While the coordinator is still calling specialists, the track shows who is done and who is working.
 
-![The run in progress](docs/images/running.png)
+![The run in progress](docs/images/progress.png)
 
 The report does not invent one price. The sources it found disagree: one news report cites about $4,657 per ounce, a historical series sits near $4,615 to $4,668, and Kitco shows $4,139.80 on a different date. The conflict stays in the report, with the citations.
 
-![The cited report](docs/images/report.png)
+![The cited report](docs/images/answer.png)
 
 ## What you get
 
@@ -70,7 +70,7 @@ flowchart TB
 
 Search hits are collected directly, then the top pages are read for a short passage that contains a number when the page has one. Analysis, synthesis, and the report are each a single model call. The default model is DeepSeek V4.1 Flash on [OpenCode Zen](https://opencode.ai/zen/v1).
 
-![Five steps](docs/images/steps.png)
+![Five steps](docs/images/track.png)
 
 The amber bar advances one fifth per finished step. The active step adds only a partial advance. Blue means working. Green means done.
 
