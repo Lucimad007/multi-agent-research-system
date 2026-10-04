@@ -47,8 +47,8 @@ function wordCount(value: string) {
 }
 
 const examples = [
-  "Iranian rial exchange rate versus the US dollar",
-  "Factors that move the rial against the dollar",
+  "What is the current price of gold per ounce",
+  "What has moved the gold price this year",
 ];
 
 export function Board() {

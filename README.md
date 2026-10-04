@@ -11,7 +11,7 @@ Ask one question. The coordinator talks to four specialists and returns a cited 
 
 ## A run
 
-Question: what is the current price of the US dollar in Iranian rial?
+Question: what is the current price of gold per ounce?
 
 ![The question in the desk](docs/images/question.png)
 
@@ -19,7 +19,7 @@ While the coordinator is still calling specialists, the track shows who is done 
 
 ![The run in progress](docs/images/running.png)
 
-The report answers that question. It does not collapse the price into one number. Wise states an official rate of 42,000 IRR per dollar. Iran Market Data states a free-market open of 2,653,000 IRR. A third figure, 1,374,600 IRR, stays unresolved.
+The report does not invent one price. The sources it found disagree: one news report cites about $4,657 per ounce, a historical series sits near $4,615 to $4,668, and Kitco shows $4,139.80 on a different date. The conflict stays in the report, with the citations.
 
 ![The cited report](docs/images/report.png)
 
@@ -94,7 +94,7 @@ Set `OPENCODE_API_KEY` in `.env`. A `provider:model` string such as `openai:gpt-
 ```python
 from research import run_coordinator
 
-result = run_coordinator("What is the current price of the US dollar in Iranian rial?")
+result = run_coordinator("What is the current price of gold per ounce?")
 print(result["answer"])
 ```
 
